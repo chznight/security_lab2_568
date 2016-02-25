@@ -19,39 +19,40 @@
 #define FMT_OUTPUT "ECE568-SERVER: %s %s\n"
 #define FMT_INCOMPLETE_CLOSE "ECE568-SERVER: Incomplete shutdown\n"
 
-SSL_CTX* InitServerCTX(void)
+ int pem_passwd_cb(char *buf, int size, int rwflag, void *password)
+ {
+  strncpy(buf, (char *)(password), size);
+  buf[size - 1] = '\0';
+  printf("Called pem_passwd_cb\n");
+  return(strlen(buf));
+ }
+
+SSL_CTX* InitServerCTX(char* CertFile, char* KeyFile, char *password)
 {   
     SSL_METHOD *method;
     SSL_CTX *ctx;
-
+    SSL_library_init();
     OpenSSL_add_all_algorithms();  /* load & register all cryptos, etc. */
     SSL_load_error_strings();   /* load all error messages */
-    method = SSLv3_server_method();  /* create new server-method instance */
+    method = SSLv23_method();  /* create new server-method instance */
     ctx = SSL_CTX_new(method);   /* create new context from method */
-    if ( ctx == NULL )
-    {
+    if ( ctx == NULL ) {
         ERR_print_errors_fp(stderr);
         abort();
     }
-    return ctx;
-}
-
-void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
-{
-    //New lines 
-    if (SSL_CTX_load_verify_locations(ctx, CertFile, KeyFile) != 1)
+    if (SSL_CTX_load_verify_locations(ctx, CertFile, 0) != 1)
         ERR_print_errors_fp(stderr);
 
     if (SSL_CTX_set_default_verify_paths(ctx) != 1)
         ERR_print_errors_fp(stderr);
-    //End new lines
 
-    /* set the local certificate from CertFile */
-    if (SSL_CTX_use_certificate_file(ctx, CertFile, SSL_FILETYPE_PEM) <= 0)
-    {
+    if (SSL_CTX_use_certificate_chain_file(ctx, KeyFile) <= 0) {
         ERR_print_errors_fp(stderr);
         abort();
     }
+    SSL_CTX_set_default_passwd_cb_userdata(ctx, password);
+    //SSL_CTX_set_default_passwd_cb(ctx, password_cb);
+    SSL_CTX_set_default_passwd_cb(ctx, pem_passwd_cb);
     /* set the private key from KeyFile (may be the same as CertFile) */
     if (SSL_CTX_use_PrivateKey_file(ctx, KeyFile, SSL_FILETYPE_PEM) <= 0)
     {
@@ -64,11 +65,12 @@ void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
         fprintf(stderr, "Private key does not match the public certificate\n");
         abort();
     }
-
+    SSL_CTX_set_cipher_list(ctx, "SSLv2:SSLv3:TLSv1");
     //New lines - Force the client-side have a certificate
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
     SSL_CTX_set_verify_depth(ctx, 4);
-    //End new lines
+
+    return ctx;
 }
 
 void ShowCerts(SSL* ssl)
@@ -97,7 +99,7 @@ int main(int argc, char **argv)
   struct sockaddr_in sin;
   int val=1;
   pid_t pid;
-  char CertFile[] = "bob.pem";
+  char CertFile[] = "568ca.pem";
   char KeyFile[] = "bob.pem";
   SSL_CTX *ctx;
   /*Parse command line arguments*/
@@ -117,9 +119,7 @@ int main(int argc, char **argv)
       exit(0);
   }
 
-  SSL_library_init();
-  ctx = InitServerCTX();
-  LoadCertificates(ctx, CertFile, KeyFile);
+  ctx = InitServerCTX(CertFile, KeyFile, "password");
 
   if((sock=socket(AF_INET,SOCK_STREAM,0))<0){
     perror("socket");
@@ -196,3 +196,4 @@ int main(int argc, char **argv)
   close(sock);
   return 1;
 }
+
