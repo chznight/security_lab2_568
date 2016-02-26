@@ -68,9 +68,47 @@ SSL_CTX* InitServerCTX(char* CertFile, char* KeyFile, char *password)
     SSL_CTX_set_cipher_list(ctx, "SSLv2:SSLv3:TLSv1");
     //New lines - Force the client-side have a certificate
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
-    SSL_CTX_set_verify_depth(ctx, 4);
-
+#if (OPENSSL_VERSION_NUMBER < 0x0090600fL)
+    SSL_CTX_set_verify_depth(ctx,1);
+#endif
     return ctx;
+}
+
+int check_client_cert (SSL *ssl) {
+  X509 *peer;
+  char peer_CN[256];
+  char email_check[256];
+  if(SSL_get_verify_result(ssl)!=X509_V_OK) {
+    printf (FMT_ACCEPT_ERR);
+    printf("Fail client cert check\n");
+    return -1;
+  }
+  /*Check the common name*/
+  peer=SSL_get_peer_certificate(ssl);
+  X509_NAME_get_text_by_NID (X509_get_subject_name(peer), NID_commonName, peer_CN, 256);
+  X509_NAME_get_text_by_NID (X509_get_subject_name(peer), NID_pkcs9_emailAddress, email_check, 256);
+  printf(FMT_CLIENT_INFO, peer_CN, email_check);
+  return 0;
+}
+
+void shutdownSSLserver (SSL* ssl){
+    printf("Server SSL shutting down\n");
+    int r = SSL_shutdown(ssl);
+    switch(r){
+    //successful shutdown
+    case 1:
+      break;
+    //shutdown not yet finished
+    case 0:
+      printf("Shutdown incomplete\n");
+      break;
+    //failed shutdown
+    case -1:
+      printf("Shutdown error\n");
+      break;
+    default:
+      printf("Shutdown failed\n");       
+    }
 }
 
 void ShowCerts(SSL* ssl)
@@ -110,8 +148,8 @@ int main(int argc, char **argv)
     case 2:
       port=atoi(argv[1]);
       if (port<1||port>65535){
-	fprintf(stderr,"invalid port number");
-	exit(0);
+  fprintf(stderr,"invalid port number");
+  exit(0);
       }
       break;
     default:
@@ -162,7 +200,7 @@ int main(int argc, char **argv)
     }
     else {
       /*Child code*/
-      int len, sd;
+      int len;
       char buf[256];
       char *answer = "42";
       SSL *ssl;
@@ -170,29 +208,74 @@ int main(int argc, char **argv)
       SSL_set_fd(ssl, s);
 
       if (SSL_accept(ssl) == -1){
-        printf("Here1\n");
-        ERR_print_errors_fp(stderr);
+        //printf("Here1\n");
+        printf (FMT_ACCEPT_ERR);
+        ERR_print_errors_fp(stdout);
       } else {
         //len = recv(s, &buf, 255, 0);
-        ShowCerts(ssl);
+        //ShowCerts(ssl);
+        if (check_client_cert(ssl) != 0) {
+          close(sock);
+          SSL_CTX_free(ctx);
+          return 0;
+        }
         len = SSL_read(ssl, &buf, 255);
+        switch(SSL_get_error(ssl, len)){
+          case SSL_ERROR_NONE:
+            break;
+          case SSL_ERROR_ZERO_RETURN:
+            shutdownSSLserver(ssl);
+            SSL_free(ssl);
+            close(sock);
+            SSL_CTX_free(ctx);
+            return 0;
+          case SSL_ERROR_SYSCALL:
+          //premature closure message
+            printf(FMT_INCOMPLETE_CLOSE);
+            SSL_free(ssl);
+            close(sock);
+            SSL_CTX_free(ctx);
+            return 0;
+          default:
+            printf ("Server read error\n"); 
+        }
         buf[len]= '\0';
         printf(FMT_OUTPUT, buf, answer);
         //send(s, answer, strlen(answer), 0);
-        SSL_write (ssl, answer, strlen(answer));
-        sd = SSL_get_fd(ssl);
-        SSL_free(ssl);
-        close(sd);
+        int check = SSL_write (ssl, answer, strlen(answer));
+        switch(SSL_get_error(ssl, check)){
+          case SSL_ERROR_NONE:
+            if (check != strlen(answer))
+              printf ("Write Incomplete\n");
+            break;
+          case SSL_ERROR_ZERO_RETURN:
+            break;
+          case SSL_ERROR_SYSCALL:
+            //premature closure message
+            printf(FMT_INCOMPLETE_CLOSE);
+            SSL_free(ssl);
+            close(sock);
+            SSL_CTX_free(ctx);
+            return 0;
+          default:
+            printf("Server write error\n"); 
+        }
+        //setup bi-directional shutdown
+        int success = SSL_shutdown(ssl);
+        if (success == 0) {
+          shutdownSSLserver(ssl);
+        } else if (success < 0) {
+          printf("Server shutdown error\n");
+        } else {
+          SSL_free(ssl);
+        }
       }
-
-
       close(sock);
-      SSL_CTX_free(ctx);
-      //close(s);
+      close(s);
       return 0;
     }
   }
-  
+  SSL_CTX_free(ctx);
   close(sock);
   return 1;
 }

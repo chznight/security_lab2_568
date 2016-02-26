@@ -14,15 +14,14 @@
 #define PORT 8765
 
 /* use these strings to tell the marker what is happening */
-#define FMT_CONNECT_ERR "ECE568-CLIENT: SSL connect error\n"
-#define FMT_SERVER_INFO "ECE568-CLIENT: %s %s %s\n"
-#define FMT_OUTPUT "ECE568-CLIENT: %s %s\n"
-#define FMT_CN_MISMATCH "ECE568-CLIENT: Server Common Name doesn't match\n"
-#define FMT_EMAIL_MISMATCH "ECE568-CLIENT: Server Email doesn't match\n"
-#define FMT_NO_VERIFY "ECE568-CLIENT: Certificate does not verify\n"
-#define FMT_INCORRECT_CLOSE "ECE568-CLIENT: Premature close\n"
+#define FMT_CONNECT_ERR "ECE568-CLIENT: SSL connect error\n"                //check
+#define FMT_SERVER_INFO "ECE568-CLIENT: %s %s %s\n"                         //check
+#define FMT_OUTPUT "ECE568-CLIENT: %s %s\n"                                 //check
+#define FMT_CN_MISMATCH "ECE568-CLIENT: Server Common Name doesn't match\n" //check
+#define FMT_EMAIL_MISMATCH "ECE568-CLIENT: Server Email doesn't match\n"    //check
+#define FMT_NO_VERIFY "ECE568-CLIENT: Certificate does not verify\n"        //check
+#define FMT_INCORRECT_CLOSE "ECE568-CLIENT: Premature close\n"              //check
 
-static char* pass;
 
  int pem_passwd_cb(char *buf, int size, int rwflag, void *password)
  {
@@ -31,6 +30,36 @@ static char* pass;
   printf("Called pem_passwd_cb\n");
   return(strlen(buf));
  }
+ 
+int check_cert(ssl, host, email)
+SSL *ssl;
+char *host;
+char *email;
+{
+ X509 *peer;
+ char peer_CN[256];
+ char email_check[256];
+ char issuer[256];
+ if(SSL_get_verify_result(ssl)!=X509_V_OK) {
+  printf (FMT_NO_VERIFY);
+  return -1;
+ }
+ /*Check the common name*/
+ peer=SSL_get_peer_certificate(ssl);
+ X509_NAME_get_text_by_NID (X509_get_subject_name(peer), NID_commonName, peer_CN, 256);
+ if(strcasecmp(peer_CN,host)) {
+  printf(FMT_CN_MISMATCH);
+  return -1;
+ }
+ X509_NAME_get_text_by_NID (X509_get_subject_name(peer), NID_pkcs9_emailAddress, email_check, 256);
+ if(strcasecmp(email_check,email)) {
+  printf(FMT_EMAIL_MISMATCH);
+  return -1;
+ }
+  X509_NAME_get_text_by_NID (X509_get_issuer_name(peer), NID_commonName, issuer, 256);
+  printf(FMT_SERVER_INFO, peer_CN, email_check, issuer);
+  return 0;
+}
 
 SSL_CTX* Initialize_CTX(char* CertFile, char* KeyFile, char* password)
 {   
@@ -39,14 +68,13 @@ SSL_CTX* Initialize_CTX(char* CertFile, char* KeyFile, char* password)
 
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();
-    method = SSLv3_client_method();
+    method = SSLv23_client_method();
     ctx = SSL_CTX_new(method);
     if ( ctx == NULL ) {
       ERR_print_errors_fp(stderr);
       abort();
     }
-    if ( SSL_CTX_use_certificate_chain_file(ctx, KeyFile) <= 0 )
-    {
+    if ( SSL_CTX_use_certificate_chain_file(ctx, KeyFile) <= 0 ) {
         ERR_print_errors_fp(stderr);
         abort();
     }
@@ -54,18 +82,17 @@ SSL_CTX* Initialize_CTX(char* CertFile, char* KeyFile, char* password)
     //SSL_CTX_set_default_passwd_cb(ctx, password_cb);
     SSL_CTX_set_default_passwd_cb(ctx, pem_passwd_cb);
     /* set the private key from KeyFile (may be the same as CertFile) */
-    if ( SSL_CTX_use_PrivateKey_file(ctx, KeyFile, SSL_FILETYPE_PEM) <= 0 )
-    {
+    if ( SSL_CTX_use_PrivateKey_file(ctx, KeyFile, SSL_FILETYPE_PEM) <= 0 ) {
         ERR_print_errors_fp(stderr);
         abort();
     }
 
     /* verify private key */
-    if ( !SSL_CTX_check_private_key(ctx) )
-    {
+    if ( !SSL_CTX_check_private_key(ctx) ) {
         fprintf(stderr, "Private key does not match the public certificate\n");
         abort();
     }
+
     if (SSL_CTX_load_verify_locations(ctx, CertFile, 0) != 1)
         ERR_print_errors_fp(stderr);
       
@@ -73,6 +100,26 @@ SSL_CTX* Initialize_CTX(char* CertFile, char* KeyFile, char* password)
     return ctx;
 }
 
+void shutdownSSLclient (SSL* ssl){
+    printf("Client SSL shutting down\n");
+    int r = SSL_shutdown(ssl);
+       
+    switch(r){
+    //successful shutdown
+    case 1:
+      break;
+    //shutdown not yet finished
+    case 0:
+      printf("Shutdown incomplete\n");
+      break;
+    //failed shutdown
+    case -1:
+      printf("Shutdown error\n");
+      break;
+    default:
+      printf("Shutdown failed\n");       
+    }
+}
 
 void ShowCerts(SSL* ssl)
 {   X509 *cert;
@@ -106,6 +153,7 @@ int main(int argc, char **argv)
   char KeyFile[] = "alice.pem";
   SSL_CTX *ctx;
   SSL *ssl;
+  //secret = "TEST TEST TEST 123";
   /*Parse command line arguments*/
   
   switch(argc){
@@ -115,8 +163,8 @@ int main(int argc, char **argv)
       host = argv[1];
       port=atoi(argv[2]);
       if (port<1||port>65535){
-	fprintf(stderr,"invalid port number");
-	exit(0);
+  fprintf(stderr,"invalid port number");
+  exit(0);
       }
       break;
     default:
@@ -154,18 +202,64 @@ int main(int argc, char **argv)
   ssl = SSL_new(ctx);
   SSL_set_fd(ssl, sock);
   if (SSL_connect(ssl) == -1) {
-    ERR_print_errors_fp(stderr);
+    printf(FMT_CONNECT_ERR);
+    ERR_print_errors_fp(stdout);
   } else {
+    if (check_cert(ssl, "Bob's Server", "ece568bob@ecf.utoronto.ca") != 0) {
+      close (sock);
+      SSL_CTX_free(ctx);
+      return 0;
+    }
     printf("Connected with %s encryption\n", SSL_get_cipher(ssl));
-    ShowCerts(ssl);
-    SSL_write(ssl, secret, strlen(secret));
-    len = SSL_read(ssl, &buf, 255);
-    //send(sock, secret, strlen(secret),0);
-    //len = recv(sock, &buf, 255, 0);
-    buf[len]='\0';
+    //ShowCerts(ssl);
+    int check = SSL_write(ssl, secret, strlen(secret));
+    switch(SSL_get_error(ssl, check)){
+      case SSL_ERROR_NONE:
+        if(check!=strlen(secret))
+          printf("write not complete\n");
+        break;
+      case SSL_ERROR_ZERO_RETURN:
+        shutdownSSLclient (ssl);
+        SSL_free(ssl);
+        close (sock);
+        SSL_CTX_free(ctx);
+        return 0;
+      case SSL_ERROR_SYSCALL:
+        //premature closure message
+        printf(FMT_INCORRECT_CLOSE);
+        SSL_free(ssl);
+        close(sock);
+        SSL_CTX_free(ctx);
+        return 0;
+      default:
+        printf ("Client write error\n");     
+    }
+
+
+    len = SSL_read(ssl, buf, 255);
+    while (len > 0) {
+      buf[len]='\0';
+      printf(FMT_OUTPUT, secret, buf);
+      len = SSL_read(ssl, buf, 255);
+    }
+    switch(SSL_get_error(ssl, len)){
+      case SSL_ERROR_NONE:
+        break;
+      case SSL_ERROR_ZERO_RETURN:
+        break;
+      case SSL_ERROR_SYSCALL:
+        //premature closure message
+        printf(FMT_INCORRECT_CLOSE);
+        SSL_free(ssl);
+        close(sock);
+        SSL_CTX_free(ctx);
+        return 0;
+      default:
+        printf ("Client read error\n");
+    }
+    
+    shutdownSSLclient (ssl);
     SSL_free(ssl);
-    /* this is how you output something for the marker to pick up */
-    printf(FMT_OUTPUT, secret, buf);
   }
   close(sock);
   SSL_CTX_free(ctx);
