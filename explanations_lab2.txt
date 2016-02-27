@@ -1,2 +1,15 @@
 #Chen Hao Zhang, 999272228, chenhao.zhang@mail.utoronto.ca
-#fill in your name, student#, email here
+#Matthew Cheung, 1000697150, matthewkc.cheung@mail.utoronto.ca
+
+Goal of this lab is to establish secure communication between a client and server.
+This is down using SSL.
+To authenticate client, we load the private, public key and certificate.
+To authenticate server, we load the root certificate.
+SSL handshake is done by SSL_connect().
+Server authentication is done by check_cert function.
+Check_cert function checks for valid certificate, common name, and email.
+When encountering an error, they are handled according to the lab manual.
+The server initiates proper shutdown request.
+Client/server select the proper connection method according to lab manual.
+Client limits the connections method by SSL_CTX_set_options.
+
